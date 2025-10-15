@@ -174,20 +174,18 @@ def build_xfoil_script_for_naca(
     ]
     if visc is not None:
         lines.extend([
-            "v",
-            f"Re {visc}",
+            f"v {visc}",
             "M 0.05",  # Add explicit Mach number
-            "INIT",   # Initialize BL
-            ""
         ])
     lines.extend([
         f"ITER {iter_limit}",
-        f"PACC {polar_outpath} {polar_outpath}.dump",
+        f"PACC",
+        f"{polar_outpath}",
+        f"{polar_outpath}.dump",
         f"ASEQ {aseq}",
         "PACC",
         "",
         "QUIT"
-        "EOF"
     ])
 
     return ("\n".join(lines) + "\n").encode("utf-8")
