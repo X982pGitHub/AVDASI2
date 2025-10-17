@@ -38,7 +38,13 @@ RESULTS_CSV: str = os.path.join(WORKDIR, "results.csv")
 
 # Run settings
 SAVE_POL_DUMP: bool = False
-PURGE = True
+PURGE: bool = False
+MAX_WORKERS = min(14, (os.cpu_count() or 1)) 
+
+L_vals = [0, 2]
+P_vals = list(range(0, 7))
+S_vals = list(range(0, 10))
+TT_vals = list(range(9, 25))
 
 
 # ICAO Standard Atmosphere - SEA LEVEL
@@ -58,12 +64,7 @@ MU_s = 0.15          # Takeoff friction for starboard wing
 MACH: float = VELOCITY / C
 
 REYNOLDS: float = DENSITY*VELOCITY*CHORD_LENGTH / DYNAMIC_VISCOSITY
-print(REYNOLDS)
 
-L_vals = [0, 2]
-P_vals = list(range(0, 7))
-S_vals = list(range(0, 10))
-TT_vals = list(range(9, 25))
 
 COARSE_SETTINGS = {
     "panels": 160, 
@@ -86,7 +87,6 @@ FINE_SETTINGS = {
 MAX_RETRIES = 3
 RELAXED_ASEQ = "0 8 1"
 RELAXED_PANELS = 140      
-MAX_WORKERS = min(14, (os.cpu_count() or 1)) 
 
 # =============================================================================
 # METRIC FUNCTION
@@ -181,6 +181,14 @@ def ensure_workdir(purge = True) -> None:
     os.makedirs(WORKDIR, exist_ok=True)
     os.makedirs(os.path.join(WORKDIR, "polars"), exist_ok=True)
     os.makedirs(os.path.join(WORKDIR, "logs"), exist_ok=True)
+
+def loading_wheel(future: concurrent.futures.Future[Any]) -> None:
+    animation = "|/-\\"
+    idx = 0
+    while not future.done():
+        print(animation[idx % len(animation)], end="\r")
+        idx += 1
+        time.sleep(0.1)
 
 
 def naca5_code_to_str(L: int, P: int, S: int, TT: int) -> Optional[str]:
@@ -579,7 +587,7 @@ def main() -> None:
             results.append(res)
             write_result_row(res)
             status = "OK" if res['ok'] else "FAILED"
-            print(f"[{len(results)}/{len(worklist)}] code={res['code']} status={status} metric={res['metric']:.3f}")
+            print(f"[{len(results)}/{len(worklist)}] NACA {res['code']} status={status} metric={res['metric']:.3f}")
 
     all_rows = load_results_csv()
     print("\nStarting high-fidelity validation...")
@@ -589,14 +597,14 @@ def main() -> None:
     
     max_hf_evals = hf_case_id + 30  # Limit HF evaluations
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=min(MAX_WORKERS, 10)) as ex:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
         # Initial fill of the queue
-        next_batch = get_next_candidates(min(10, max_hf_evals - hf_case_id))
+        next_batch = get_next_candidates(min(MAX_WORKERS, max_hf_evals - hf_case_id))
         print("Top coarse candidates:")
         for c in next_batch:
             # Reserve case ID immediately
             reserve_hf_case(c["code"], hf_case_id)
-            print(c["code"], c["metric"])
+            print(f'NACA {c["code"]}, metric={c["metric"]}')
             
             future = ex.submit(
                 evaluate_naca_case,
@@ -623,12 +631,12 @@ def main() -> None:
                 try:
                     hf = future.result()
                     write_result_row(hf, update_existing=True)
-                    print(f"HF complete: {code} metric={hf['metric']:.3f}")
+                    print(f"HF complete: NACA {code} metric={hf['metric']:.3f}")
                     
                     # Check if we found a stable optimum
                     all_rows = load_results_csv()
                     current_best = max(all_rows, key=lambda r: r["metric"])
-                    if int(current_best["case_id"]) >= 10000:
+                    if int(current_best["case_id"]) >= 10000 and current_best["case_id"] == {code}:
                         print(f"\nFound stable optimum: {current_best['code']} "
                               f"with metric={current_best['metric']:.3f}")
                         stable_optimum_found = True
@@ -637,8 +645,8 @@ def main() -> None:
             
             # Add new tasks if queue not full, optimum not found, and under limit
             remaining_evals = max_hf_evals - hf_case_id
-            if len(running_tasks) < 10 and not stable_optimum_found and remaining_evals > 0:
-                slots_available = min(10 - len(running_tasks), remaining_evals)
+            if len(running_tasks) < MAX_WORKERS and not stable_optimum_found and remaining_evals > 0:
+                slots_available = min(MAX_WORKERS - len(running_tasks), remaining_evals)
                 next_batch = get_next_candidates(slots_available)
                 if not next_batch:
                     print("Reached HF iteration limit")
@@ -660,6 +668,7 @@ def main() -> None:
                     )
                     running_tasks[future] = c["code"]
                     hf_case_id += 1
+                    loading_wheel(future)
 
     print(f"\nFinal Results:")
     final_rows = load_results_csv()
