@@ -32,7 +32,7 @@ import pandas as pd
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-XFOIL_CMD: str = "../XFOIL6.99/xfoil.exe"
+XFOIL_CMD: str = "xfoil"
 WORKDIR: str = "./xfoil_runs"
 RESULTS_CSV: str = os.path.join(WORKDIR, "results.csv")
 
