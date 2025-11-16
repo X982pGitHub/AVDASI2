@@ -1,0 +1,8 @@
+{
+    "min_m": -0.28,
+    "max_ld": 0.28,
+    "max_cl": 0.16,
+    "aoa_at_max_cl": 0.15,
+    "max_drag": -0.08,
+    "thickness": 0.05
+}

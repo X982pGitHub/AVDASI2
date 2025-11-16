@@ -1,0 +1,26 @@
+{
+  "paths": {
+    "workdir": "./xfoil_runs",
+    "xfoil_cmd": "xfoil",
+    "result_csv":  "results.csv",
+    "normalised_result_csv": "normalised_results.csv"
+  },
+  "naca_ranges": {
+    "L_vals": [0, 2],
+    "P_vals": [0, 1, 2, 3, 4, 5, 6],
+    "S_vals": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "TT_vals": [14, 15, 16, 17, 18]
+  },
+  "run_settings":{
+    "save_pol_dump": false,
+    "purge": false,
+    "workers": 14
+  },
+  "atmosphere": {
+    "dynamic_viscosity": 1.7894e-5,
+    "density": 1.225,
+    "temperature": 288.15,
+    "pressure": 101325,
+    "speed_of_sound": 340.294
+  }
+}

@@ -1,0 +1,19 @@
+{
+    "xfoil_coarse": {
+        "panels": 160,
+        "aseq": "-5 20 0.5",
+        "iter": 150,
+        "timeout": 60
+    },
+    "xfoil_fine": {
+        "panels": 250,
+        "aseq": "-5 20 0.25",
+        "iter": 400,
+        "timeout": 350
+     },
+     "relaxed": {
+        "aseq": "0 8 1",
+        "panels": 140
+    },
+    "max_retries": 3
+}

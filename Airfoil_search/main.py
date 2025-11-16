@@ -27,66 +27,8 @@ import datetime
 from typing import Any, Optional, Hashable
 
 import pandas as pd
+from config import settings
 
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-XFOIL_CMD: str = "xfoil"
-WORKDIR: str = "./xfoil_runs"
-RESULTS_CSV: str = os.path.join(WORKDIR, "results.csv")
-
-# Run settings
-SAVE_POL_DUMP: bool = False
-PURGE: bool = False
-MAX_WORKERS = min(14, (os.cpu_count() or 1)) 
-
-L_vals = [0, 2]
-P_vals = list(range(0, 7))
-S_vals = list(range(0, 10))
-TT_vals = list(range(9, 25))
-
-
-# ICAO Standard Atmosphere - SEA LEVEL
-DYNAMIC_VISCOSITY: float = 1.7894e-5
-DENSITY: float = 1.225
-TEMPERATURE: float = 288.15
-PRESSURE: float = 101325
-C: float = 340.294
-
-# Flight characteristics
-CHORD_LENGTH: float = 0.3
-VELOCITY: float = 20.0
-AR: float = 8.83
-SPAN_EFFIC = 0.90
-MU_s = 0.15          # Takeoff friction for starboard wing
-
-MACH: float = VELOCITY / C
-
-REYNOLDS: float = DENSITY*VELOCITY*CHORD_LENGTH / DYNAMIC_VISCOSITY
-
-
-COARSE_SETTINGS = {
-    "panels": 160, 
-    "aseq": "-5 20 0.5",
-    "Re": REYNOLDS,
-    "mach": MACH,
-    "iter": 150,
-    "timeout": 60, 
-}
-
-FINE_SETTINGS = {
-    "panels": 250,         
-    "aseq": "-5 20 0.25",
-    "Re": REYNOLDS,
-    "mach": MACH,
-    "iter": 400,    
-    "timeout": 350,
-}
-
-MAX_RETRIES = 3
-RELAXED_ASEQ = "0 8 1"
-RELAXED_PANELS = 140      
 
 # =============================================================================
 # METRIC FUNCTION
@@ -117,7 +59,7 @@ def values_from_polar_rows(polar_rows: list[dict[str, Any]], NACA: str | float) 
             AoA.append(alpha)
         except Exception:
             continue
-    val = compute_metric(AoA, C_l,  C_d, NACA, AR, SPAN_EFFIC, MU_s, [-2.0, 6.0])
+    val = compute_metric(AoA, C_l,  C_d, NACA, settings.FlightParams.aspect_ratio, settings.FlightParams.span_efficiency, settings.FlightParams.friction_coeff, [-2.0, 6.0])
     if (val["metric"] <= -1e8):
         val["metric"] = -np.inf
     return val
@@ -148,12 +90,10 @@ def compute_metric(AoA, C_l2d, C_d2d, NACA, AR, e, mu_s, fit_range_deg):
     idxmaxC_l = np.argmax(C_l3d)
     AoAmaxC_l = AoA[idxmaxC_l]
 
-    metric = (-0.28 * np.min(M) +
-              0.28 * np.max(LD) +
-              0.16 * np.max(C_l3d) +
-              0.15 * AoAmaxC_l +
-              -0.08 * np.max(C_dtotal) +
-              0.05 * t_max)
+    values = np.array([np.min(M), np.max(LD), np.max(C_l3d), AoAmaxC_l, np.max(C_dtotal), t_max])
+
+    weights = settings.MetricWeights.array
+    metric = values.dot(weights)
     return {"timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             'metric': metric, 
             'Min M': np.min(M),
@@ -163,6 +103,42 @@ def compute_metric(AoA, C_l2d, C_d2d, NACA, AR, e, mu_s, fit_range_deg):
             'Max drag': np.max(C_dtotal),
             'Max thickness': t_max,
             }
+
+def compute_normalised_results(interm_result = settings.Paths.result_csv) -> pd.DataFrame|None:
+    if not os.path.exists(interm_result):
+        print("No intermediate results found, normalisation skipped.")
+        return
+    
+    df = pd.read_csv(interm_result, dtype={"code": str})
+
+    df_ok = df[df['ok'] == True].copy()
+
+    if len(df_ok) == 0:
+        print("Intermediate results yields no successful run, normalisation skipped.")
+        return
+    
+    metric_cols = ['Min M', 'Max L/D', 'C_l', 'AoA at max C_l', 'Max drag', 'Max thickness']
+
+    missing_cols = [col for col in metric_cols if col not in df_ok.columns]
+    if missing_cols:
+        print(f"Warning: Missing columns for normalisation: {missing_cols}")
+        return
+    
+    metric_cols = [c for c in metric_cols if c in df_ok.columns]
+    max_vals = df_ok[metric_cols].abs().max().to_numpy()
+    norm_vals = np.divide(df_ok[metric_cols].to_numpy(dtype=float), max_vals, where=max_vals != 0)
+
+    weights = settings.MetricWeights.array
+
+    metric_norm = norm_vals.dot(weights)
+
+    df_norm = pd.DataFrame(norm_vals, columns=metric_cols)
+    df_norm.insert(0, "code", df_ok["code"].to_numpy())
+    df_norm["metric"] = metric_norm
+
+    df_norm.sort_values("metric", ascending=False, inplace=True, ignore_index=True)
+    return df_norm
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -176,11 +152,12 @@ def ensure_workdir(purge = True) -> None:
             polars/
             logs/
     """
+    workdir = str(settings.Paths.workdir)
     if purge:
-        shutil.rmtree(WORKDIR, ignore_errors=True)
-    os.makedirs(WORKDIR, exist_ok=True)
-    os.makedirs(os.path.join(WORKDIR, "polars"), exist_ok=True)
-    os.makedirs(os.path.join(WORKDIR, "logs"), exist_ok=True)
+        shutil.rmtree(workdir, ignore_errors=True)
+    os.makedirs(workdir, exist_ok=True)
+    os.makedirs(os.path.join(workdir, "polars"), exist_ok=True)
+    os.makedirs(os.path.join(workdir, "logs"), exist_ok=True)
 
 def loading_wheel(future: concurrent.futures.Future[Any]) -> None:
     animation = "|/-\\"
@@ -283,7 +260,7 @@ def run_xfoil_script(script_bytes: bytes, timeout: int) -> tuple[int, str, str]:
     process = None
     try:
         process = subprocess.Popen(
-            [XFOIL_CMD],
+            [settings.Paths.xfoil_cmd],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
@@ -361,7 +338,7 @@ def evaluate_naca_case(
     P: int,
     S: int,
     TT: int,
-    settings: dict[str, Any],
+    xfoil_settings: settings.XFOILParams,
     retry_relaxed: bool = True,
 ) -> dict[str, Any]:  # type: ignore[return]
     """
@@ -375,7 +352,7 @@ def evaluate_naca_case(
         P (int): Camber position index.
         S (int): Reflex flag.
         TT (int): Thickness percentage.
-        settings (dict[str, Any]): Dictionary of XFOIL solver settings.
+        xfoil_settings settings.XFOILParams: XFOIL solver settings.
         retry_relaxed (bool, optional): Whether to retry failed cases with
             relaxed settings. Defaults to True.
 
@@ -393,15 +370,15 @@ def evaluate_naca_case(
     assert maybe_code is not None, "Invalid NACA code should have been filtered out"
     code_str = maybe_code
     polar_name = f"naca_{code_str}.polar"
-    polar_path = os.path.join(WORKDIR, "polars", polar_name)
-    log_path = os.path.join(WORKDIR, "logs", f"case_{case_id}_{code_str}.log")
+    polar_path = os.path.join(settings.Paths.workdir, "polars", polar_name)
+    log_path = os.path.join(settings.Paths.workdir, "logs", f"case_{case_id}_{code_str}.log")
 
-    panels = settings.get("panels", 140)
-    aseq = settings.get("aseq", "-5 15 0.5")
-    Re = settings.get("Re", None)
-    mach = settings.get("mach", None)
-    iter_limit = settings.get("iter", 200)
-    timeout = settings.get("timeout", 60)
+    panels = xfoil_settings.panels or 140
+    aseq = xfoil_settings.aseq or "-5 15 0.5"
+    Re = xfoil_settings.Re or None
+    mach = xfoil_settings.mach or None
+    iter_limit = xfoil_settings.iter or 200
+    timeout = xfoil_settings.timeout or 60
 
     attempt = 0
     stdout_total = ""
@@ -416,11 +393,11 @@ def evaluate_naca_case(
         "log": log_path,
     }
     
-    while attempt <= MAX_RETRIES:
+    while attempt <= settings.XFOILSolverParams.max_retries:
         attempt += 1
         if os.path.exists(polar_path):
             os.remove(polar_path)
-        script = build_xfoil_script_for_naca(code_str, polar_path, panels, aseq, Re, mach, iter_limit, SAVE_POL_DUMP)
+        script = build_xfoil_script_for_naca(code_str, polar_path, panels, aseq, Re, mach, iter_limit, settings.Execution.save_pol_dump)
         rc, out, err = run_xfoil_script(script, timeout)
         stdout_total += out
         stderr_total += err
@@ -439,9 +416,9 @@ def evaluate_naca_case(
             return result
 
         log_case(case_id, code_str, "FAILED", f"attempt={attempt} rc={rc}", log_path)
-        if attempt <= MAX_RETRIES and retry_relaxed:
-            panels = max(RELAXED_PANELS, panels // 2)
-            aseq = RELAXED_ASEQ
+        if attempt <= settings.XFOILSolverParams.max_retries and retry_relaxed:
+            panels = max(settings.XFOILSolverParams.relaxed.panels, panels // 2)
+            aseq = settings.XFOILSolverParams.relaxed.aseq
             timeout = max(timeout * 2, 120)
             iter_limit = max(50, iter_limit // 2)
             time.sleep(0.5)
@@ -468,31 +445,31 @@ def write_result_row(res: dict[str, Any], update_existing: bool = False) -> None
     row_df = pd.DataFrame([row])
     row_df["code"] = row_df["code"].astype(str)
     
-    if update_existing and os.path.exists(RESULTS_CSV):
+    if update_existing and os.path.exists(settings.Paths.result_csv):
         # Load existing data
-        df = pd.read_csv(RESULTS_CSV, dtype={"code": str})
+        df = pd.read_csv(settings.Paths.result_csv, dtype={"code": str})
 
         df["code"] = df["code"].astype(str)
         df = df[df["code"] != row["code"]]
 
         df = pd.concat([df, row_df], ignore_index=True)[CSV_FIELDS]
-        df.to_csv(RESULTS_CSV, index=False)
+        df.to_csv(settings.Paths.result_csv, index=False)
     else:
         # Append mode
-        row_df.to_csv(RESULTS_CSV, mode='a', header=not os.path.exists(RESULTS_CSV), index=False)
+        row_df.to_csv(settings.Paths.result_csv, mode='a', header=not os.path.exists(settings.Paths.result_csv), index=False)
 
 
-def load_results_csv() -> list[dict[str | Hashable, Any]]:
+def load_results_csv(csv_path) -> list[dict[str | Hashable, Any]]:
     """
     Loads the results CSV file into memory, coercing numeric fields.
 
     Returns:
         list[dict[str, Any]]: Parsed results list.
     """
-    if not os.path.exists(RESULTS_CSV):
+    if not os.path.exists(csv_path):
         return []
         
-    df = pd.read_csv(RESULTS_CSV, dtype={"code": str})
+    df = pd.read_csv(csv_path, dtype={"code": str})
     # Convert metric to float, replacing errors with -inf
     df["metric"] = pd.to_numeric(df["metric"], errors="coerce").fillna(float("-inf"))
     # Convert ok to boolean
@@ -514,27 +491,27 @@ def reserve_hf_case(code: str, case_id: int) -> None:
         "polar": None,
         "log": None
     }
-    if os.path.exists(RESULTS_CSV):
+    if os.path.exists(settings.Paths.result_csv):
         rows = []
-        with open(RESULTS_CSV, "r") as f:
+        with open(settings.Paths.result_csv, "r") as f:
             reader = csv.DictReader(f)
             rows = [r for r in reader if r["code"] != code]
         rows.append(row)
-        with open(RESULTS_CSV, "w", newline="") as f:
+        with open(settings.Paths.result_csv, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writeheader()
             writer.writerows(rows)
     else:
-        with open(RESULTS_CSV, "a", newline="") as f:
+        with open(settings.Paths.result_csv, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-            if not os.path.exists(RESULTS_CSV):
+            if not os.path.exists(settings.Paths.result_csv):
                 writer.writeheader()
             writer.writerow(row)
 
 
 def get_next_candidates(n: int) -> list[dict]:
     """Get next n best candidates that haven't been run in high fidelity"""
-    all_rows = load_results_csv()
+    all_rows = load_results_csv(settings.Paths.result_csv)
     ranked = sorted(all_rows, key=lambda r: r["metric"], reverse=True)
     # Filter out already HF-evaluated (case_id >= 10000)
     evaluated_codes = {r["code"] for r in ranked if int(r["case_id"]) >= 10000}
@@ -557,9 +534,9 @@ def main() -> None:
         4. Identify top candidates and re-evaluate at high fidelity.
         5. Save results and print summary.
     """
-    ensure_workdir(PURGE)
+    ensure_workdir(settings.Execution.purge)
     # Generate all possible combinations
-    all_candidates = list(product(L_vals, P_vals, S_vals, TT_vals))
+    all_candidates = list(product(settings.NACAranges.L_vals, settings.NACAranges.P_vals, settings.NACAranges.S_vals, settings.NACAranges.TT_vals))
     print(f"Total possible combinations: {len(all_candidates)}")
     
     # Filter valid NACA codes first
@@ -570,8 +547,8 @@ def main() -> None:
     print(f"Valid NACA codes (4+ digits): {len(candidates)}")
 
     completed_codes = set()
-    if os.path.exists(RESULTS_CSV):
-        existing = load_results_csv()
+    if os.path.exists(settings.Paths.result_csv):
+        existing = load_results_csv(settings.Paths.result_csv)
         completed_codes = {r["code"] for r in existing}
 
     worklist = [(i, L, P, S, TT) for i, (L, P, S, TT) in enumerate(candidates, 1) 
@@ -580,8 +557,8 @@ def main() -> None:
 
     results = []
     start = time.time()
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(evaluate_naca_case, cid, L, P, S, TT, COARSE_SETTINGS, True): (cid, L, P, S, TT) for cid, L, P, S, TT in worklist}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=settings.Execution.max_workers) as ex:
+        futures = {ex.submit(evaluate_naca_case, cid, L, P, S, TT, settings.XFOILSolverParams.coarse, True): (cid, L, P, S, TT) for cid, L, P, S, TT in worklist}
         for fut in concurrent.futures.as_completed(futures):
             res = fut.result()
             results.append(res)
@@ -589,7 +566,16 @@ def main() -> None:
             status = "OK" if res['ok'] else "FAILED"
             print(f"[{len(results)}/{len(worklist)}] NACA {res['code']} status={status} metric={res['metric']:.3f}")
 
-    all_rows = load_results_csv()
+    print("\nGenerating normalized results...")
+    results_norm: pd.DataFrame = compute_normalised_results()
+
+    results_norm.to_csv(settings.Paths.normalised_result_csv, index=False)
+
+    print(f"\nNormalized results saved to: {settings.Paths.normalised_result_csv}")
+    print("Top 3 profiles by normalised metric:")
+    print(results_norm[['code', 'metric']].head(3).to_string(index=False))
+
+    all_rows = load_results_csv(settings.Paths.result_csv)
     print("\nStarting high-fidelity validation...")
     running_tasks = {}
     hf_case_id = 10000
@@ -597,9 +583,9 @@ def main() -> None:
     
     max_hf_evals = hf_case_id + 30  # Limit HF evaluations
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=settings.Execution.max_workers) as ex:
         # Initial fill of the queue
-        next_batch = get_next_candidates(min(MAX_WORKERS, max_hf_evals - hf_case_id))
+        next_batch = get_next_candidates(min(settings.Execution.max_workers, max_hf_evals - hf_case_id))
         print("Top coarse candidates:")
         for c in next_batch:
             # Reserve case ID immediately
@@ -613,7 +599,7 @@ def main() -> None:
                 int(c["code"][1]),
                 int(c["code"][2]),
                 int(c["code"][3:5]),
-                FINE_SETTINGS,
+                settings.XFOILSolverParams.fine,
                 True
             )
             running_tasks[future] = c["code"]
@@ -634,7 +620,7 @@ def main() -> None:
                     print(f"HF complete: NACA {code} metric={hf['metric']:.3f}")
                     
                     # Check if we found a stable optimum
-                    all_rows = load_results_csv()
+                    all_rows = load_results_csv(settings.Paths.result_csv)
                     current_best = max(all_rows, key=lambda r: r["metric"])
                     if int(current_best["case_id"]) >= 10000 and current_best["case_id"] == {code}:
                         print(f"\nFound stable optimum: {current_best['code']} "
@@ -645,8 +631,8 @@ def main() -> None:
             
             # Add new tasks if queue not full, optimum not found, and under limit
             remaining_evals = max_hf_evals - hf_case_id
-            if len(running_tasks) < MAX_WORKERS and not stable_optimum_found and remaining_evals > 0:
-                slots_available = min(MAX_WORKERS - len(running_tasks), remaining_evals)
+            if len(running_tasks) < settings.Execution.max_workers and not stable_optimum_found and remaining_evals > 0:
+                slots_available = min(settings.Execution.max_workers - len(running_tasks), remaining_evals)
                 next_batch = get_next_candidates(slots_available)
                 if not next_batch:
                     print("Reached HF iteration limit")
@@ -663,7 +649,7 @@ def main() -> None:
                         int(c["code"][1]),
                         int(c["code"][2]),
                         int(c["code"][3:5]),
-                        FINE_SETTINGS,
+                        settings.XFOILSolverParams.fine,
                         True
                     )
                     running_tasks[future] = c["code"]
@@ -671,10 +657,10 @@ def main() -> None:
                     loading_wheel(future)
 
     print(f"\nFinal Results:")
-    final_rows = load_results_csv()
+    final_rows = load_results_csv(settings.Paths.result_csv)
     best = max(final_rows, key=lambda r: r["metric"])
     print(f"Best NACA code: {best['code']} metric={best['metric']:.3f}")
-    print(f"Results CSV: {RESULTS_CSV}")
+    print(f"Results CSV: {settings.Paths.result_csv}")
     print(f"Total time: {(time.time() - start)/60:.2f} min")
 
 if __name__ == "__main__":
