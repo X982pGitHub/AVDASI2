@@ -21,6 +21,6 @@
     "density": 1.225,
     "temperature": 288.15,
     "pressure": 101325,
-    "speed_of_sound": 340.294
+    "gamma": 1.4
   }
 }
