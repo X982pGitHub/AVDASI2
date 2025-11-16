@@ -88,7 +88,7 @@ class Atmosphere:
             density=raw["density"],
             temperature=raw["temperature"],
             pressure=raw["pressure"],
-            gamma=raw["speed_of_sound"]
+            gamma=raw["gamma"]
         )
 
 
