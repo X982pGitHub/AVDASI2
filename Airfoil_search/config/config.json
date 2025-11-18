@@ -21,6 +21,7 @@
     "density": 1.225,
     "temperature": 288.15,
     "pressure": 101325,
-    "gamma": 1.4
+    "gamma": 1.4,
+    "altitude": 0
   }
 }

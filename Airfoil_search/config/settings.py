@@ -1,17 +1,36 @@
+"""
+Configuration management for Aerofoil Search application.
+
+Provides:
+- Immutable dataclasses for configuration sections
+- Instantiation from JSON files
+    - `paths`, `execution`, `NACA_ranges`, `atmosphere`, `flight_params`, `solver_params`, `metric_weights`
+
+Requires:
+- ambiance
+- numpy
+- (in the same directory as this file) `config.json`, `flight.json`, `solver.json`, `weights.json`
+
+"""
+
+import sys
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import Sequence
 import json
 from pathlib import Path
 import numpy as np
+import warnings
+import ambiance
 
+CONFIG_DIR = Path(__file__).parent
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Paths:
     workdir: Path
     xfoil_cmd: str
-    result_csv: str
-    normalised_result_csv: str
+    result_csv: Path
+    normalised_result_csv: Path
     
     @classmethod
     def load(cls, config_data: dict) -> 'Paths':
@@ -22,12 +41,12 @@ class Paths:
         return cls(
             workdir=workdir,
             xfoil_cmd=raw["xfoil_cmd"],
-            result_csv=os.path.join(workdir, raw["results_csv"]),
-            normalised_result_csv=os.path.join(workdir, raw["normalised_results_csv"])
+            result_csv=workdir / Path(raw["result_csv"]),
+            normalised_result_csv=workdir / Path(raw["normalised_result_csv"])
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Execution:
     max_workers: int
     purge: bool
@@ -45,12 +64,12 @@ class Execution:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class NACAranges:
-    L_vals: List[int]
-    P_vals: List[int]
-    S_vals: List[int]
-    TT_vals: List[int]
+    L_vals: Sequence[int]
+    P_vals: Sequence[int]
+    S_vals: Sequence[int]
+    TT_vals: Sequence[int]
     
     @classmethod
     def load(cls, config_data: dict) -> 'NACAranges':
@@ -65,7 +84,7 @@ class NACAranges:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Atmosphere:
     dynamic_viscosity: float
     density: float
@@ -79,10 +98,27 @@ class Atmosphere:
         return np.sqrt(self.gamma * self.pressure / self.density)
     
     @classmethod
-    def load(cls, config_data: dict) -> 'Atmosphere':
+    def from_altitude(cls, altitude: float) -> Atmosphere:
+        atmosphere = ambiance.Atmosphere(altitude)
+        return cls(
+                    dynamic_viscosity = atmosphere.dynamic_viscosity[0],
+                    density = atmosphere.density[0],
+                    temperature = atmosphere.temperature[0],
+                    pressure = atmosphere.pressure[0],
+                    gamma=ambiance.CONST.kappa
+                )
+    
+    @classmethod
+    def load(cls, config_data: dict) -> Atmosphere:
         """Load from config dict"""
-        raw = config_data['atmosphere']
-        
+        raw: dict[str, float] = config_data['atmosphere']
+        alt = raw.get("altitude")
+        if isinstance(alt, (int, float)):
+            matched = [key for key in ("dynamic_viscosity", "density", "temperature", "pressure", "gamma") if key in raw]
+            if matched:
+                warnings.warn(f"Value given for 'altitude', {matched} given in config will be ignored.", UserWarning)
+            return cls.from_altitude(alt)
+
         return cls(
             dynamic_viscosity=raw["dynamic_viscosity"],
             density=raw["density"],
@@ -92,7 +128,7 @@ class Atmosphere:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FlightParams:
     chord_length: float
     velocity: float
@@ -146,7 +182,7 @@ class Relaxed:
     panels: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetricWeights:
     min_m: float
     max_ld: float
@@ -164,7 +200,7 @@ class MetricWeights:
             self.aoa_at_max_cl,
             self.max_drag,
             self.thickness
-        ])[:6]
+        ])
     
     @classmethod
     def load(cls, weights_data: dict) -> 'MetricWeights':
@@ -179,7 +215,7 @@ class MetricWeights:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class XFOILSolverParams:
     coarse: XFOILParams
     fine: XFOILParams
@@ -203,7 +239,7 @@ class XFOILSolverParams:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Config:
     """Complete configuration bundle"""
     paths: Paths
@@ -216,10 +252,10 @@ class Config:
 
 
 def _load_config(
-    config_path: str = "./config/config.json",
-    flight_path: str = "./config/flight.json",
-    solver_path: str = "./config/solver.json",
-    weights_path: str = "./config/weights.json"
+    config_path: Path = CONFIG_DIR / "config.json",
+    flight_path: Path = CONFIG_DIR / "flight.json",
+    solver_path: Path = CONFIG_DIR / "solver.json",
+    weights_path: Path = CONFIG_DIR / "weights.json"
 ) -> Config:
     """
     Load all configuration from JSON files.
@@ -271,12 +307,20 @@ def _load_config(
         metric_weights=metric_weights
     )
 
-config = _load_config()
+try:
+    _config = _load_config()
+except FileNotFoundError as e:
+    print(f"Configuration file missing: {e}", file=sys.stderr)
+    print("Expected files: config.json, flight.json, solver.json, weights.json")
+    sys.exit(1)
 
-paths = config.paths
-execution = config.execution
-naca_ranges = config.naca_ranges
-atmosphere = config.atmosphere
-flight_params = config.flight_params
-solver_params = config.solver_params
-metric_weights = config.metric_weights
+paths = _config.paths
+execution = _config.execution
+naca_ranges = _config.naca_ranges
+atmosphere = _config.atmosphere
+flight_params = _config.flight_params
+solver_params = _config.solver_params
+metric_weights = _config.metric_weights
+
+if __name__ == "__main__":
+    print(paths, execution, naca_ranges, atmosphere, flight_params, solver_params, metric_weights)
